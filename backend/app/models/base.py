@@ -41,6 +41,16 @@ JSONType = JSON().with_variant(JSONB(), "postgresql")
 TZDateTime = DateTime(timezone=True)
 
 
+def one_of(column: str, values: tuple[str, ...]) -> str:
+    """Cláusula `col IN (...)` para un CHECK, a partir de la tupla de estados.
+
+    Así la lista de valores admitidos vive en un solo sitio: la tupla que ya
+    documenta el modelo, en lugar de duplicarse en el CHECK.
+    """
+    opciones = ", ".join(f"'{value}'" for value in values)
+    return f"{column} IN ({opciones})"
+
+
 def new_uuid() -> uuid.UUID:
     return uuid.uuid4()
 

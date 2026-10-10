@@ -6,7 +6,11 @@ import uuid
 from datetime import date, datetime, time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# Tipos de IVA que el negocio puede aplicar. Un tipo inventado en el desglose
+# no lo acepta la AEAT, así que se rechaza en la frontera y no más adentro.
+VAT_RATES = (0, 4, 10, 21)
 
 
 class ORMModel(BaseModel):
@@ -22,26 +26,43 @@ class LineIn(BaseModel):
     """
 
     variant_id: uuid.UUID | None = None
-    quantity: int = 1
+    # Positiva siempre: el signo negativo es exclusivo de la devolución, que
+    # exige rol de dueño. Sin esta cota, una «venta» de cantidad negativa saca
+    # dinero del cajón saltándose ese permiso.
+    quantity: int = Field(default=1, gt=0, le=999)
     note: str | None = None
     open_price_name: str | None = None
-    open_price_cents: int | None = Field(default=None, ge=0)
+    open_price_cents: int | None = Field(default=None, gt=0, le=1_000_000)
     open_price_category_id: uuid.UUID | None = None
     open_price_vat_rate: int | None = None
+
+    @field_validator("open_price_vat_rate")
+    @classmethod
+    def _tipo_de_iva_admitido(cls, value: int | None) -> int | None:
+        if value is not None and value not in VAT_RATES:
+            raise ValueError(f"tipo de IVA no admitido: {value}")
+        return value
 
     @model_validator(mode="after")
     def _variante_o_precio_libre(self):
         if self.variant_id is None and self.open_price_cents is None:
             raise ValueError("la línea necesita una variante o un importe libre")
-        if self.quantity == 0:
-            raise ValueError("la cantidad no puede ser cero")
         return self
 
 
 class PaymentIn(BaseModel):
     method: Literal["cash", "card"]
-    amount_cents: int
+    # Positivo: el reparto en negativo de una devolución lo construye el
+    # servidor, nunca el terminal. Un pago negativo colado en una venta normal
+    # resta del efectivo esperado del cierre sin que nada lo delate.
+    amount_cents: int = Field(gt=0)
     tendered_cents: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _entregado_solo_en_efectivo(self):
+        if self.method != "cash" and self.tendered_cents is not None:
+            raise ValueError("lo entregado solo tiene sentido en efectivo")
+        return self
 
 
 class SaleIn(BaseModel):
@@ -63,8 +84,12 @@ class SaleIn(BaseModel):
 
 
 class RefundIn(BaseModel):
-    line_ids: list[uuid.UUID] | None = None
+    # min_length=1: una lista vacía es falsy y se interpretaba como «devuélvelo
+    # todo», que es lo contrario de lo que pide quien manda una lista.
+    line_ids: list[uuid.UUID] | None = Field(default=None, min_length=1)
     reason: str | None = None
+    # None = se devuelve por donde se cobró.
+    method: Literal["cash", "card"] | None = None
 
 
 class VatGroupOut(BaseModel):
@@ -95,6 +120,8 @@ class PaymentOut(ORMModel):
 class OrderOut(ORMModel):
     id: uuid.UUID
     status: str
+    # Para que el terminal sepa en qué cierre Z ha caído la venta.
+    session_id: uuid.UUID | None = None
     channel: str
     ticket_full_number: str | None = None
     total_cents: int
@@ -123,10 +150,24 @@ class SessionCloseIn(BaseModel):
 
 
 class MovementIn(BaseModel):
+    """Movimiento de caja. El signo lo pone el servidor a partir del `kind`.
+
+    Antes el signo venía del cliente y la semántica era «positivo entra,
+    negativo sale», sin nada que lo ligara al tipo: una retirada con importe
+    positivo *subía* el efectivo esperado, con lo que el descuadre salía del
+    doble del importe retirado.
+    """
+
     kind: Literal["deposit_in", "deposit_out", "withdrawal", "float_in", "correction"]
-    amount_cents: int
+    amount_cents: int = Field(gt=0)
     reason: str | None = None
     related_deposit_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _motivo_obligatorio_si_mueve_dinero_propio(self):
+        if self.kind in ("withdrawal", "correction") and not (self.reason or "").strip():
+            raise ValueError("una retirada o corrección necesita motivo")
+        return self
 
 
 class SessionOut(ORMModel):
@@ -153,6 +194,14 @@ class ZReport(BaseModel):
     cash_sales_cents: int
     card_sales_cents: int
     movements_cents: int
+    # Desglose de los movimientos: sin él, una retirada de 200 y cuatro fianzas
+    # de 50 se anulan y el arqueo no deja ver ninguna de las dos cosas.
+    deposits_in_cents: int = 0
+    deposits_out_cents: int = 0
+    withdrawals_cents: int = 0
+    float_in_cents: int = 0
+    corrections_cents: int = 0
+    deposits_held_cents: int = 0
     expected_cash_cents: int
     counted_cash_cents: int | None = None
     difference_cents: int | None = None

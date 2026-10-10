@@ -153,8 +153,17 @@
     font-weight: 600;
   }
 
-  &.small button {
-    height: 2.9rem;
+  // El teclado del cobro en efectivo tenia las teclas mas pequenas de toda la
+  // app (46 px), justo donde un error de pulsacion cuesta dinero. Cuatro
+  // columnas para que quepa la tecla de borrar un digito.
+  &.small {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.6rem;
+
+    button {
+      height: 4rem;
+      font-size: 1.5rem;
+    }
   }
 }
 
@@ -368,7 +377,17 @@
 }
 
 .change strong {
+  // El cambio es el numero que el cajero lee para abrir el cajon: es lo mas
+  // importante de esta pantalla y era el cuarto en tamano.
+  font-size: 3rem;
+  line-height: 1.1;
   color: var(--ok);
+}
+
+// Lo entregado no cubre el total: se dice cuanto falta, en rojo, en lugar de
+// esconder el bloque y dejar al cajero sin saber que pasa.
+.change.short strong {
+  color: var(--danger);
 }
 
 .stepper {

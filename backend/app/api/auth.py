@@ -42,12 +42,41 @@ class StaffOut(BaseModel):
 _attempts: dict[str, tuple[int, datetime | None]] = {}
 
 
-def _throttle_key(request: Request, device_id: str | None) -> str:
-    return device_id or (request.client.host if request.client else "desconocido")
+def _throttle_key(request: Request) -> str:
+    """Clave del contador de intentos: la IP del terminal, y nada más.
+
+    El `device_id` NO entra aquí aunque venga en la petición. Lo elige el
+    cliente, así que cualquier dato suyo en la clave reabre el agujero:
+    mandando un valor nuevo en cada intento, cada intento aterrizaba en una
+    entrada distinta del diccionario y el contador nunca llegaba al tope, de
+    modo que se podían recorrer los 10.000 PIN de cuatro dígitos.
+
+    Contar por IP sigue siendo «por terminal» y no «por usuario», que es lo
+    que persigue la decisión 8: un PIN mal teclado no deja sin cobrar al
+    resto del personal.
+    """
+    return request.client.host if request.client else "desconocido"
+
+
+def _purge_attempts(now: datetime) -> None:
+    """Quita las entradas caducadas.
+
+    El diccionario se indexa con datos que vienen de la petición; sin purga
+    crece sin tope mientras el proceso viva.
+    """
+    expired = [
+        key
+        for key, (_, locked_until) in _attempts.items()
+        if locked_until is not None and locked_until <= now
+    ]
+    for key in expired:
+        del _attempts[key]
 
 
 @router.get("/staff", response_model=list[StaffOut])
-def list_staff(db: DbSession) -> list[StaffOut]:
+def list_staff(db: DbSession, _: CurrentStaff) -> list[StaffOut]:
+    """Plantilla activa. Exige token: sin él, publicar el id del dueño en la
+    red del local es la mitad del trabajo de quien quiera forjarse un token."""
     rows = db.scalars(select(Staff).where(Staff.active).order_by(Staff.name)).all()
     return [StaffOut(id=str(s.id), name=s.name, role=s.role) for s in rows]
 
@@ -62,7 +91,8 @@ def login(data: LoginIn, request: Request, db: DbSession) -> LoginOut:
     """
     settings = get_settings()
     now = datetime.now(timezone.utc)
-    key = _throttle_key(request, data.device_id)
+    _purge_attempts(now)
+    key = _throttle_key(request)
 
     failures, locked_until = _attempts.get(key, (0, None))
     if locked_until and locked_until > now:

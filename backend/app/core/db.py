@@ -17,7 +17,10 @@ engine = create_engine(
     settings.database_url,
     echo=settings.sql_echo,
     future=True,
-    connect_args={"check_same_thread": False} if _is_sqlite else {},
+    # timeout: dos cobros simultáneos esperan su turno en lugar de fallar
+    connect_args=(
+        {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
+    ),
 )
 
 if _is_sqlite:
@@ -26,10 +29,24 @@ if _is_sqlite:
     def _sqlite_pragmas(dbapi_connection, _record):
         """SQLite no respeta las claves ajenas por defecto; en PostgreSQL esto
         no hace falta. WAL evita bloqueos entre lectura y escritura."""
+        # Fuera el BEGIN implícito de pysqlite: lo emitimos nosotros abajo.
+        dbapi_connection.isolation_level = None
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.close()
+
+    @event.listens_for(engine, "begin")
+    def _begin_immediate(connection):
+        """Toma el bloqueo de escritura al abrir la transacción.
+
+        Con el BEGIN diferido de serie, dos cobros a la vez leen el contador de
+        tickets y el segundo muere con «database is locked» al escribir: el
+        cajero se come un 500 en hora punta. Con BEGIN IMMEDIATE espera su
+        turno. En PostgreSQL esto no se usa: allí el bloqueo real lo da el
+        SELECT ... FOR UPDATE de services/tickets.py.
+        """
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

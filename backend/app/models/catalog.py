@@ -8,7 +8,15 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import GUID, Entity
@@ -30,7 +38,9 @@ class Category(Entity):
 class Product(Entity):
     __tablename__ = "products"
 
-    category_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("categories.id"))
+    category_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("categories.id"), index=True
+    )
     name: Mapped[str] = mapped_column(String(150))
     short_name: Mapped[str] = mapped_column(String(40))  # texto del botón
     description: Mapped[str | None] = mapped_column(String(500))
@@ -70,8 +80,12 @@ class ProductVariant(Entity):
 
 class DailySpecial(Entity):
     __tablename__ = "daily_specials"
+    __table_args__ = (
+        # Una sugerencia por día: con dos, la carta mostraba una al azar.
+        Index("uq_daily_specials_day", "day", unique=True),
+    )
 
-    day: Mapped[date] = mapped_column(Date, index=True)
+    day: Mapped[date] = mapped_column(Date)
     title: Mapped[str] = mapped_column(String(150))
     description: Mapped[str | None] = mapped_column(String(500))
     price_cents: Mapped[int | None] = mapped_column(Integer)

@@ -5,10 +5,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import GUID, Entity, TZDateTime
+from app.models.base import GUID, Entity, TZDateTime, one_of
 
 MOVEMENT_KINDS = (
     "deposit_in",    # entra una fianza de paellera
@@ -22,6 +22,20 @@ DEPOSIT_STATUS = ("held", "returned", "kept")
 
 class CashSession(Entity):
     __tablename__ = "cash_sessions"
+    __table_args__ = (
+        # Dos cierres con el mismo número rompen la correlatividad del libro.
+        Index("uq_cash_sessions_z_number", "z_number", unique=True),
+        # Una sola caja abierta a la vez, garantizado por la base y no por un
+        # SELECT seguido de un INSERT. Se indexa una expresión constante
+        # porque dos NULL no colisionan entre sí en un índice normal.
+        Index(
+            "uq_cash_sessions_abierta",
+            text("(closed_at IS NULL)"),
+            unique=True,
+            sqlite_where=text("closed_at IS NULL"),
+            postgresql_where=text("closed_at IS NULL"),
+        ),
+    )
 
     device_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("devices.id"))
     z_number: Mapped[int | None] = mapped_column(Integer)
@@ -43,6 +57,17 @@ class CashSession(Entity):
 
 class CashMovement(Entity):
     __tablename__ = "cash_movements"
+    __table_args__ = (
+        CheckConstraint(one_of("kind", MOVEMENT_KINDS), name="ck_cash_movements_kind"),
+        # El signo tiene que corresponder al tipo: una retirada con importe
+        # positivo inflaba el efectivo esperado del cierre.
+        CheckConstraint(
+            "(kind IN ('deposit_out', 'withdrawal') AND amount_cents <= 0) OR "
+            "(kind IN ('deposit_in', 'float_in') AND amount_cents >= 0) OR "
+            "kind = 'correction'",
+            name="ck_cash_movements_signo",
+        ),
+    )
 
     session_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID, ForeignKey("cash_sessions.id"), index=True
@@ -61,6 +86,9 @@ class Deposit(Entity):
     ticket y solo mueve caja. Pendiente de confirmar con la gestoría."""
 
     __tablename__ = "deposits"
+    __table_args__ = (
+        CheckConstraint(one_of("status", DEPOSIT_STATUS), name="ck_deposits_status"),
+    )
 
     item: Mapped[str] = mapped_column(String(100), default="Paellera")
     customer_name: Mapped[str | None] = mapped_column(String(150))

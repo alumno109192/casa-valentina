@@ -208,12 +208,17 @@
         <strong>{{ tenderedText() || '0,00' }}</strong>
       </div>
 
-      @if (changeCents() !== null && changeCents()! >= 0) {
-        <div class="change">
-          <span>Cambio</span>
-          <strong>{{ cents(changeCents()!) }}</strong>
-        </div>
-      }
+      <!-- Siempre visible: si desaparecía al no cubrir el total, el cajero no
+           sabía si había teclado mal o si faltaba dinero. -->
+      <div
+        class="change"
+        [class.short]="changeIsShort()"
+        role="status"
+        aria-live="polite"
+      >
+        <span>{{ changeIsShort() ? 'Falta' : 'Cambio' }}</span>
+        <strong>{{ cents(changeAbsCents()) }}</strong>
+      </div>
 
       <div class="keypad small">
         @for (digit of ['1','2','3','4','5','6','7','8','9']; track digit) {
@@ -221,6 +226,13 @@
         }
         <button type="button" (click)="pressTenderDigit(',')">,</button>
         <button type="button" (click)="pressTenderDigit('0')">0</button>
+        <button
+          type="button"
+          (click)="backspaceTender()"
+          aria-label="Borrar un dígito"
+        >
+          &#8592;
+        </button>
         <button type="button" class="ghost" (click)="clearTender()">C</button>
       </div>
 

@@ -77,6 +77,12 @@ export class Till {
 
   readonly quickCash = computed(() => quickCashOptions(this.totalCents()));
 
+  /** Cambio en positivo, para pintarlo; el signo lo dice `changeIsShort`. */
+  readonly changeAbsCents = computed(() => Math.abs(this.changeCents() ?? 0));
+
+  /** Verdadero cuando lo entregado no llega al total. */
+  readonly changeIsShort = computed(() => (this.changeCents() ?? 0) < 0);
+
   constructor() {
     if (!this.api.session()) {
       void this.router.navigate(['/']);
@@ -229,19 +235,47 @@ export class Till {
     this.tenderedText.set(formatCents(cents));
   }
 
-  pressTenderDigit(digit: string): void {
-    this.tenderedText.update((text) => (text === '0' ? digit : text + digit));
+  /**
+   * Teclado del efectivo entregado. Impide que se pueda escribir un importe
+   * imposible: una segunda coma, o un tercer decimal, acababan en un cambio
+   * mal calculado o en un mensaje de error que no correspondía.
+   */
+  pressTenderDigit(key: string): void {
+    this.paymentError.set(null);
+    this.tenderedText.update((text) => {
+      if (key === ',') {
+        return text.includes(',') ? text : (text || '0') + ',';
+      }
+      const [, decimals] = text.split(',');
+      if (decimals !== undefined && decimals.length >= 2) {
+        return text;
+      }
+      return text === '0' ? key : text + key;
+    });
+  }
+
+  /** Borra un solo dígito: antes la única corrección era borrarlo todo. */
+  backspaceTender(): void {
+    this.paymentError.set(null);
+    this.tenderedText.update((text) => text.slice(0, -1));
   }
 
   clearTender(): void {
     this.tenderedText.set('');
+    this.paymentError.set(null);
   }
 
   confirmCash(): void {
     const tendered = parseCents(this.tenderedText());
     const total = this.totalCents();
-    if (tendered === null || tendered < total) {
-      this.paymentError.set('Lo entregado no cubre el total');
+    if (tendered === null) {
+      // Mensaje propio: antes un importe inválido decía «no cubre el total»,
+      // y el cajero añadía billetes buscando cubrir algo ya cubierto.
+      this.paymentError.set('Importe no válido');
+      return;
+    }
+    if (tendered < total) {
+      this.paymentError.set(`Faltan ${formatEuros(total - tendered)}`);
       return;
     }
     this.charge([
@@ -254,9 +288,14 @@ export class Till {
   }
 
   private charge(payments: SaleIn['payments']): void {
+    if (this.busy()) {
+      return;
+    }
     this.busy.set(true);
     const sale: SaleIn = {
-      id: crypto.randomUUID(),
+      // El id viene del pedido y sobrevive al reintento: es lo que permite al
+      // servidor reconocer un reenvío en lugar de cobrar dos veces.
+      id: this.order.draftId(),
       lines: this.order.toLinesIn(),
       payments,
       channel: 'counter',
@@ -272,10 +311,18 @@ export class Till {
       },
       error: (response: { status: number; error?: { detail?: string } }) => {
         this.busy.set(false);
+        if (response.status === 0) {
+          // Decir «no se ha grabado» era falso en el caso que importa: la
+          // petición pudo llegar y perderse solo la respuesta. Con el id
+          // estable, reintentar es seguro, y hay que decírselo al cajero.
+          this.paymentError.set(
+            'Sin respuesta del servidor. Vuelve a pulsar Cobrar: si la venta ' +
+              'ya se grabó, no se duplicará.',
+          );
+          return;
+        }
         this.paymentError.set(
-          response.status === 0
-            ? 'Sin conexión: la venta no se ha grabado'
-            : (response.error?.detail ?? 'No se pudo grabar la venta'),
+          response.error?.detail ?? 'No se pudo grabar la venta',
         );
       },
     });

@@ -32,7 +32,14 @@ def current_staff(
     except jwt.InvalidTokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token inválido")
 
-    staff = db.get(Staff, uuid.UUID(payload["sub"]))
+    try:
+        staff_id = uuid.UUID(payload["sub"])
+    except (KeyError, ValueError, TypeError):
+        # Un `sub` ausente o malformado es un token inválido, no un fallo del
+        # servidor: sin esto sale un 500 con traza en el log del mini-PC.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token inválido")
+
+    staff = db.get(Staff, staff_id)
     if staff is None or not staff.active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "usuario no válido")
     return staff

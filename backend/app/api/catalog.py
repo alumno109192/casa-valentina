@@ -38,12 +38,20 @@ def _tree(db: DbSession, channel: str) -> list[MenuCategory]:
         .order_by(Category.sort_order, Category.name)
     ).all()
 
-    products = db.scalars(
+    stmt = (
         select(Product)
-        .options(selectinload(Product.variants))
+        # Una variante archivada seguía apareciendo en la botonera y se podía
+        # vender al precio viejo, justo lo que el archivado quiere evitar.
+        .options(selectinload(Product.variants.and_(~ProductVariant.archived)))
         .where(prod_visible, ~Product.archived)
         .order_by(Product.sort_order, Product.name)
-    ).all()
+    )
+    if channel == "menu":
+        # En la carta pública lo agotado no se ofrece; en el TPV sí aparece,
+        # atenuado, para que el cajero sepa que existe.
+        stmt = stmt.where(Product.is_available)
+
+    products = db.scalars(stmt).all()
 
     by_category: dict[uuid.UUID, list[Product]] = {}
     for product in products:

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentStaff, DbSession
+from app.core.clock import today
 from app.models.catalog import ProductVariant
 from app.models.preorders import Preorder, PreorderLine
 from app.schemas.sales import PreorderIn, PreorderOut, PreorderStatusIn
@@ -98,7 +99,7 @@ def day_board(db: DbSession, _: CurrentStaff, day: date | None = None) -> DayBoa
     El recuento es lo que permite planificar el asado: cuántos pollos hay
     comprometidos entre las 13:00 y las 13:30, por ejemplo.
     """
-    target = day or date.today()
+    target = day or today()
     rows = db.scalars(
         select(Preorder)
         .options(selectinload(Preorder.lines))

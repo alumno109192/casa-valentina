@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.clock import local_year
 from app.models.org import TicketCounter
 
 
@@ -39,6 +40,10 @@ def format_ticket_number(series: str, number: int, issued_at: datetime) -> str:
 
     El número es continuo por serie y no se reinicia cada año: el año que
     se muestra es informativo. Reiniciarlo por ejercicio exigiría una fila
-    de contador por serie y año.
+    de contador por serie y año, y está pendiente de decidir con la gestoría
+    (ver docs/decisiones.md).
+
+    El año se toma en hora local: con `issued_at.year` en UTC, un cobro a las
+    00:30 del 1 de enero en Madrid salía numerado con el año anterior.
     """
-    return f"{series}-{issued_at.year}-{number:06d}"
+    return f"{series}-{local_year(issued_at)}-{number:06d}"

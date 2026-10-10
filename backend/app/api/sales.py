@@ -3,21 +3,23 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentStaff, DbSession, Owner
+from app.core.clock import day_range
 from app.models.audit import AuditLog
 from app.models.preorders import Preorder
-from app.models.sales import Order
-from app.schemas.sales import LineIn, OrderOut, PaymentIn, RefundIn, SaleIn
+from app.models.sales import SETTLED_STATUS, Order
+from app.schemas.sales import LineIn, OrderOut, RefundIn, SaleIn
 from app.services.sales import (
     LineInput,
     PaymentInput,
     build_lines,
+    open_cash_session_id,
     pay_order,
     refund_order,
 )
@@ -31,6 +33,18 @@ def _loaded(db: DbSession, order_id: uuid.UUID) -> Order | None:
         .options(selectinload(Order.lines), selectinload(Order.payments))
         .where(Order.id == order_id)
     ).one_or_none()
+
+
+def _metodo_dominante(order: Order) -> str:
+    """Forma de pago con la que más se cobró el ticket original."""
+    por_metodo: dict[str, int] = {}
+    for payment in order.payments:
+        por_metodo[payment.method] = (
+            por_metodo.get(payment.method, 0) + payment.amount_cents
+        )
+    if not por_metodo:
+        return "cash"
+    return max(por_metodo, key=lambda metodo: por_metodo[metodo])
 
 
 def _to_input(line: LineIn) -> LineInput:
@@ -56,7 +70,35 @@ def create_sale(data: SaleIn, db: DbSession, staff: CurrentStaff) -> OrderOut:
     if data.id is not None:
         existing = _loaded(db, data.id)
         if existing is not None:
+            # Solo es un reenvio si es el mismo cobro. Antes se devolvia el
+            # ticket guardado sin comparar nada, asi que una venta distinta
+            # con el mismo id recibia un 201 y NO se cobraba.
+            esperado = sum(p.amount_cents for p in data.payments)
+            if (
+                existing.refunds_order_id is not None
+                or existing.status == "open"
+                or existing.total_cents != esperado
+                or len(existing.lines) != len(data.lines)
+            ):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "ese identificador ya corresponde a otro ticket",
+                )
             return OrderOut.model_validate(existing)
+
+    if data.preorder_id is not None:
+        ya_cobrado = db.scalar(
+            select(Order.id).where(
+                Order.preorder_id == data.preorder_id,
+                Order.status.in_(SETTLED_STATUS),
+            )
+        )
+        if ya_cobrado is not None:
+            # Sin esto se podian emitir dos tickets validos del mismo encargo
+            # y cobrarle dos veces al cliente.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "ese encargo ya está cobrado"
+            )
 
     order = Order(
         id=data.id or uuid.uuid4(),
@@ -73,6 +115,14 @@ def create_sale(data: SaleIn, db: DbSession, staff: CurrentStaff) -> OrderOut:
     order.lines.extend(build_lines(db, [_to_input(line) for line in data.lines]))
     db.add(order)
 
+    # La sesion de caja no la elige el terminal: mandar una cerrada (o ninguna)
+    # dejaba la venta fuera de todos los cierres Z, con el dinero en el cajon.
+    session_id = open_cash_session_id(db)
+    if data.session_id is not None and data.session_id != session_id:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "la caja indicada no es la que está abierta"
+        )
+
     pay_order(
         db,
         order,
@@ -85,7 +135,7 @@ def create_sale(data: SaleIn, db: DbSession, staff: CurrentStaff) -> OrderOut:
             for p in data.payments
         ],
         staff_id=staff.id,
-        session_id=data.session_id,
+        session_id=session_id,
     )
 
     if data.preorder_id:
@@ -111,7 +161,11 @@ def list_sales(
     day: date | None = None,
     limit: int = Query(default=100, le=500),
 ) -> list[OrderOut]:
-    """Tickets de un día, el más reciente primero."""
+    """Tickets de un día, el más reciente primero.
+
+    El día se corta en hora local (ver core/clock.py): cortarlo en UTC metía
+    los cierres de después de medianoche en la jornada anterior.
+    """
     stmt = (
         select(Order)
         .options(selectinload(Order.lines), selectinload(Order.payments))
@@ -120,9 +174,8 @@ def list_sales(
         .limit(limit)
     )
     if day is not None:
-        start = datetime.combine(day, time.min, tzinfo=timezone.utc)
-        end = datetime.combine(day, time.max, tzinfo=timezone.utc)
-        stmt = stmt.where(Order.closed_at.between(start, end))
+        start, end = day_range(day)
+        stmt = stmt.where(Order.closed_at >= start, Order.closed_at < end)
 
     return [OrderOut.model_validate(o) for o in db.scalars(stmt).all()]
 
@@ -136,6 +189,12 @@ def refund_sale(
     if original is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "venta no encontrada")
 
+    session_id = open_cash_session_id(db)
+    if session_id is None:
+        # Devolver mueve dinero del cajón: sin caja abierta no hay cierre Z al
+        # que imputarlo y el arqueo saldría descuadrado.
+        raise HTTPException(status.HTTP_409_CONFLICT, "no hay caja abierta")
+
     refund = refund_order(
         db,
         original,
@@ -143,12 +202,17 @@ def refund_sale(
         staff_id=staff.id,
         reason=data.reason,
     )
-    # La devolución también se cobra: se paga en efectivo al cliente
+
+    # Se devuelve por donde se cobró, salvo que el dueño diga otra cosa.
+    # Pagar siempre en efectivo vaciaba el cajón por una comida que había
+    # entrado por datáfono.
+    metodo = data.method or _metodo_dominante(original)
     pay_order(
         db,
         refund,
-        [PaymentInput(method="cash", amount_cents=refund.total_cents)],
+        [PaymentInput(method=metodo, amount_cents=refund.total_cents)],
         staff_id=staff.id,
+        session_id=session_id,
     )
 
     db.add(
@@ -162,6 +226,8 @@ def refund_sale(
                 "total_cents": refund.total_cents,
                 "reason": data.reason,
                 "partial": bool(data.line_ids),
+                "method": metodo,
+                "original_status": original.status,
             },
         )
     )

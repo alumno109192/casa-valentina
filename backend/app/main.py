@@ -15,10 +15,17 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+# En el local hay wifi de clientes: publicar el mapa completo de la API con
+# formulario para dispararla es regalar el trabajo a quien curiosee.
+_is_prod = settings.environment == "prod"
+
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
     description="TPV, carta y encargos del Asador Casa Valentina.",
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+    openapi_url=None if _is_prod else "/openapi.json",
 )
 
 app.add_middleware(

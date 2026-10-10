@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
 from app.core.money import compute_totals
+from app.models.cash import CashSession
 from app.models.catalog import Product, ProductVariant
 from app.models.sales import Order, OrderLine, Payment
 from app.services.tickets import format_ticket_number, next_ticket_number
@@ -56,8 +57,9 @@ def build_lines(db: Session, inputs: list[LineInput]) -> list[OrderLine]:
 
     lines: list[OrderLine] = []
     for position, item in enumerate(inputs):
-        if item.quantity == 0:
-            raise _bad_request("la cantidad no puede ser cero")
+        if item.quantity <= 0:
+            # El signo negativo pertenece solo a refund_order, que exige dueno.
+            raise _bad_request("la cantidad tiene que ser positiva")
 
         if item.variant_id is not None:
             variant = db.scalars(
@@ -69,6 +71,10 @@ def build_lines(db: Session, inputs: list[LineInput]) -> list[OrderLine]:
                 raise _bad_request(f"la variante {item.variant_id} no existe")
 
             product: Product = variant.product
+            if variant.archived or product.archived:
+                raise _bad_request(f"{product.name} ya no esta en la carta")
+            if not product.is_available:
+                raise _bad_request(f"{product.name} esta agotado")
             # En un producto de precio libre el importe lo teclea el cajero
             if product.is_open_price:
                 if item.open_price_cents is None:
@@ -113,7 +119,13 @@ def build_lines(db: Session, inputs: list[LineInput]) -> list[OrderLine]:
                 name_snapshot=item.open_price_name,
                 unit_price_cents=item.open_price_cents,
                 quantity=item.quantity,
-                vat_rate=item.open_price_vat_rate or get_settings().default_vat_rate,
+                # `is None`, no `or`: un 0 % legitimo es falsy y se
+                # convertia en el 10 % por defecto sin avisar.
+                vat_rate=(
+                    item.open_price_vat_rate
+                    if item.open_price_vat_rate is not None
+                    else get_settings().default_vat_rate
+                ),
                 line_total_cents=item.open_price_cents * item.quantity,
                 note=item.note,
                 sort_order=position,
@@ -142,6 +154,21 @@ def apply_totals(order: Order) -> Order:
     return order
 
 
+def open_cash_session_id(db: Session) -> uuid.UUID | None:
+    """Id de la caja abierta, si hay alguna.
+
+    Vive aqui para que la venta pueda atarse a la caja sin que el terminal
+    tenga que decir a cual: si lo dice el cliente, puede mandar una cerrada o
+    ninguna, y entonces el dinero no sale en ningun cierre Z.
+    """
+    return db.scalar(
+        select(CashSession.id)
+        .where(CashSession.closed_at.is_(None))
+        .order_by(CashSession.opened_at.desc())
+        .limit(1)
+    )
+
+
 def pay_order(
     db: Session,
     order: Order,
@@ -164,11 +191,26 @@ def pay_order(
 
     apply_totals(order)
 
+    es_devolucion = order.refunds_order_id is not None
+    if not es_devolucion and order.total_cents <= 0:
+        # Un ticket de 0 EUR o negativo que no es devolucion gasta un
+        # correlativo y, si es negativo, vacia el cajon sin pasar por el
+        # permiso de dueno que si exige la devolucion.
+        raise _bad_request("el total de una venta tiene que ser positivo")
+
     paid = sum(item.amount_cents for item in payments)
     if paid != order.total_cents:
         raise _bad_request(
             f"los pagos suman {paid} céntimos y el total es {order.total_cents}"
         )
+
+    # Cada pago tiene que ir en el mismo sentido que el ticket. Sin esto, un
+    # pago de -76 EUR junto a otro de +100 EUR sumaba un total correcto de
+    # 24 EUR y el cierre Z daba por salidos del cajon 76 EUR que nadie saco.
+    quiere_negativo = order.total_cents < 0
+    for item in payments:
+        if item.amount_cents == 0 or (item.amount_cents < 0) != quiere_negativo:
+            raise _bad_request("el importe de un pago no cuadra con el del ticket")
 
     for item in payments:
         if item.method not in ("cash", "card"):
@@ -201,8 +243,9 @@ def pay_order(
         order.staff_id = staff_id
     if device_id:
         order.device_id = device_id
-    if session_id:
-        order.session_id = session_id
+    # La caja se resuelve en el servidor cuando no se indica: una venta sin
+    # sesion queda fuera de todos los cierres Z para siempre.
+    order.session_id = session_id or open_cash_session_id(db)
 
     db.flush()
     return order
@@ -222,8 +265,14 @@ def refund_order(
     El ticket original no se modifica nunca. Sin `line_ids` devuelve el pedido
     completo; con ellos, solo esas líneas (devolución parcial).
     """
-    if original.status not in ("paid", "refunded"):
-        raise _bad_request("solo se puede devolver un ticket cobrado")
+    if original.status not in ("paid", "partially_refunded"):
+        raise _bad_request(
+            f"no se puede devolver un ticket en estado {original.status}"
+        )
+    if original.refunds_order_id is not None:
+        # Devolver una devolucion creaba una venta positiva sin que entrara
+        # dinero en el cajon.
+        raise _bad_request("una devolución no se devuelve")
 
     to_refund = original.lines
     if line_ids:
@@ -231,6 +280,23 @@ def refund_order(
         to_refund = [line for line in original.lines if line.id in wanted]
         if len(to_refund) != len(wanted):
             raise _bad_request("alguna línea no pertenece a este ticket")
+
+    # Lo ya devuelto de este ticket. Sin esta comprobacion el mismo ticket se
+    # podia devolver indefinidamente: tres llamadas devolvian el triple.
+    ya_devueltas = set(
+        db.scalars(
+            select(OrderLine.refunds_line_id)
+            .join(Order, Order.id == OrderLine.order_id)
+            .where(
+                Order.refunds_order_id == original.id,
+                OrderLine.refunds_line_id.is_not(None),
+            )
+        ).all()
+    )
+    pendientes = [line for line in to_refund if line.id not in ya_devueltas]
+    if not pendientes:
+        raise _bad_request("eso ya está devuelto")
+    to_refund = pendientes
 
     refund = Order(
         channel=original.channel,
@@ -246,6 +312,7 @@ def refund_order(
     for position, line in enumerate(to_refund):
         refund.lines.append(
             OrderLine(
+                refunds_line_id=line.id,
                 product_id=line.product_id,
                 variant_id=line.variant_id,
                 category_id=line.category_id,
@@ -262,6 +329,12 @@ def refund_order(
     apply_totals(refund)
     db.add(refund)
 
-    original.status = "refunded"
+    # Devuelto del todo o solo en parte: lo decide si queda alguna linea sin
+    # devolver, no el hecho de haber devuelto algo. Marcar como "refunded" un
+    # ticket al que solo se le devolvio una linea perdia esa informacion.
+    devueltas_ahora = ya_devueltas | {line.id for line in to_refund}
+    quedan = [line for line in original.lines if line.id not in devueltas_ahora]
+    original.status = "partially_refunded" if quedan else "refunded"
+
     db.flush()
     return refund

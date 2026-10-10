@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, String
+from sqlalchemy import Boolean, CheckConstraint, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, Entity, TZDateTime
+from app.models.base import Base, Entity, TZDateTime, one_of
+
+STAFF_ROLES = ("owner", "cashier")
 
 
 class Business(Entity):
@@ -39,6 +41,9 @@ class Device(Entity):
 
 class Staff(Entity):
     __tablename__ = "staff"
+    __table_args__ = (
+        CheckConstraint(one_of("role", STAFF_ROLES), name="ck_staff_role"),
+    )
 
     name: Mapped[str] = mapped_column(String(100))
     pin_hash: Mapped[str] = mapped_column(String(200))

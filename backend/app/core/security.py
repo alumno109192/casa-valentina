@@ -42,5 +42,15 @@ def create_token(subject: str, role: str, device_id: str | None = None) -> str:
 
 
 def decode_token(token: str) -> dict[str, Any]:
+    """Valida firma y reclamaciones obligatorias.
+
+    `require` no es decorativo: sin él, PyJWT acepta un token sin `exp`, que
+    nunca caduca. Un token forjado sería eterno.
+    """
     settings = get_settings()
-    return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    return jwt.decode(
+        token,
+        settings.jwt_secret,
+        algorithms=[settings.jwt_algorithm],
+        options={"require": ["exp", "sub"]},
+    )

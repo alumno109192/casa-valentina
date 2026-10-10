@@ -16,6 +16,18 @@ from app.main import app
 from app.models import Base, Category, Product, ProductVariant, Staff
 
 
+@pytest.fixture(autouse=True)
+def _freno_limpio() -> Iterator[None]:
+    """El contador de intentos de PIN vive en memoria del módulo y persiste
+    entre tests: sin limpiarlo, los intentos fallidos de un test bloquean la
+    IP y dejan sin entrar a los siguientes."""
+    from app.api.auth import _attempts
+
+    _attempts.clear()
+    yield
+    _attempts.clear()
+
+
 @pytest.fixture
 def db() -> Iterator[Session]:
     engine = create_engine(
@@ -78,6 +90,20 @@ def auth(client: TestClient, owner: Staff) -> dict[str, str]:
     response = client.post("/api/auth/login", json={"pin": "1234"})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['token']}"}
+
+
+@pytest.fixture
+def caja(client: TestClient, auth: dict[str, str]) -> dict:
+    """Caja abierta con fondo de 100,00 EUR.
+
+    Cobrar y devolver exigen caja abierta: el dinero que entra o sale del
+    cajon tiene que caer en algun cierre Z.
+    """
+    response = client.post(
+        "/api/cash/session", json={"opening_float_cents": 10000}, headers=auth
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
 @pytest.fixture

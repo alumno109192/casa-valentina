@@ -26,9 +26,33 @@ export interface DraftLine {
 let counter = 0;
 const nextKey = () => `l${++counter}`;
 
+/**
+ * `crypto.randomUUID` solo existe en contexto seguro: servido por http a una
+ * tablet de la red local sería `undefined` y el botón de cobrar estallaría sin
+ * mensaje. El respaldo es suficiente para desduplicar un reenvío.
+ */
+function newId(): string {
+  const api = globalThis.crypto;
+  if (api && typeof api.randomUUID === 'function') {
+    return api.randomUUID();
+  }
+  return `tpv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 @Injectable({ providedIn: 'root' })
 export class OrderStore {
   readonly lines = signal<DraftLine[]>([]);
+
+  /**
+   * Identificador de esta venta, estable mientras el pedido siga en curso.
+   *
+   * Es la mitad cliente de la idempotencia que ya ofrece el servidor: si la
+   * petición llega al mini-PC y la respuesta se pierde, el cajero vuelve a
+   * pulsar Cobrar y el backend reconoce el mismo id en lugar de grabar un
+   * segundo ticket. Generarlo dentro de cada intento de cobro, como se hacía
+   * antes, anulaba la garantía por completo y cobraba dos veces.
+   */
+  readonly draftId = signal<string>(newId());
 
   /** Cantidad teclada antes de pulsar el producto: 3 + Pollo = 3 pollos. */
   readonly pendingQuantity = signal<number | null>(null);
@@ -118,6 +142,9 @@ export class OrderStore {
   clear(): void {
     this.lines.set([]);
     this.pendingQuantity.set(null);
+    // Pedido nuevo, venta nueva: el id solo se renueva aquí, nunca al
+    // reintentar un cobro que pudo haberse grabado.
+    this.draftId.set(newId());
   }
 
   /** Digitos del teclado numérico acumulados como cantidad. */

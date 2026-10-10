@@ -9,12 +9,25 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import GUID, Entity, JSONType, TZDateTime
+from app.models.base import GUID, Entity, JSONType, TZDateTime, one_of
 
-ORDER_STATUS = ("open", "paid", "refunded", "voided")
+# `partially_refunded`: el ticket tiene alguna línea devuelta pero no todas.
+# Sin este estado, devolver una línea de un ticket de dos marcaba el ticket
+# entero como devuelto y se perdía la pista de lo que quedaba pendiente.
+ORDER_STATUS = ("open", "paid", "partially_refunded", "refunded", "voided")
+
+# Estados en los que un ticket cuenta como cobrado para los informes y la caja.
+SETTLED_STATUS = ("paid", "partially_refunded", "refunded")
 CHANNELS = ("counter", "phone", "whatsapp", "menu_online")
 PAYMENT_METHODS = ("cash", "card")
 
@@ -23,6 +36,19 @@ class Order(Entity):
     __tablename__ = "orders"
     __table_args__ = (
         UniqueConstraint("ticket_series", "ticket_number", name="uq_ticket_number"),
+        CheckConstraint(one_of("status", ORDER_STATUS), name="ck_orders_status"),
+        CheckConstraint(one_of("channel", CHANNELS), name="ck_orders_channel"),
+        # Un ticket cobrado sin número es una factura sin numerar.
+        CheckConstraint(
+            "status = 'open' OR "
+            "(ticket_series IS NOT NULL AND ticket_number IS NOT NULL)",
+            name="ck_orders_numerado",
+        ),
+        # Es por lo que filtra el cierre Z.
+        Index("ix_orders_session_status", "session_id", "status"),
+        Index("ix_orders_refunds_order_id", "refunds_order_id"),
+        # El número impreso identifica el ticket de cara al cliente.
+        Index("uq_orders_ticket_full_number", "ticket_full_number", unique=True),
     )
 
     device_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("devices.id"))
@@ -38,7 +64,7 @@ class Order(Entity):
     # Numeración del ticket: se asigna al cobrar, correlativa por serie y sin huecos
     ticket_series: Mapped[str | None] = mapped_column(String(10))
     ticket_number: Mapped[int | None] = mapped_column(Integer)
-    ticket_full_number: Mapped[str | None] = mapped_column(String(40), index=True)
+    ticket_full_number: Mapped[str | None] = mapped_column(String(40))
 
     # Totales en céntimos. base + vat == total, siempre (ver core/money.py)
     total_cents: Mapped[int] = mapped_column(Integer, default=0)
@@ -69,6 +95,10 @@ class OrderLine(Entity):
     cambia el precio o el nombre, el ticket de ayer no cambia."""
 
     __tablename__ = "order_lines"
+    __table_args__ = (
+        # Cero unidades no es una línea; el negativo es la devolución.
+        CheckConstraint("quantity <> 0", name="ck_order_lines_cantidad"),
+    )
 
     order_id: Mapped[uuid.UUID] = mapped_column(
         GUID, ForeignKey("orders.id", ondelete="CASCADE"), index=True
@@ -79,6 +109,12 @@ class OrderLine(Entity):
     )
     category_id: Mapped[uuid.UUID | None] = mapped_column(GUID, ForeignKey("categories.id"))
 
+    # Línea del ticket original que esta línea devuelve. Es lo que permite
+    # rechazar la segunda devolución de la misma línea.
+    refunds_line_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID, ForeignKey("order_lines.id"), index=True
+    )
+
     name_snapshot: Mapped[str] = mapped_column(String(190))
     unit_price_cents: Mapped[int] = mapped_column(Integer)  # con IVA incluido
     quantity: Mapped[int] = mapped_column(Integer, default=1)
@@ -87,11 +123,16 @@ class OrderLine(Entity):
     note: Mapped[str | None] = mapped_column(String(300))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
-    order: Mapped[Order] = relationship(back_populates="lines")
+    order: Mapped[Order] = relationship(
+        back_populates="lines", foreign_keys=[order_id]
+    )
 
 
 class Payment(Entity):
     __tablename__ = "payments"
+    __table_args__ = (
+        CheckConstraint(one_of("method", PAYMENT_METHODS), name="ck_payments_method"),
+    )
 
     order_id: Mapped[uuid.UUID] = mapped_column(
         GUID, ForeignKey("orders.id", ondelete="CASCADE"), index=True

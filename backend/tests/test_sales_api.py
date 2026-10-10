@@ -169,7 +169,7 @@ def test_el_precio_del_ticket_no_cambia_si_cambia_la_tarifa(
     assert de_nuevo["lines"][0]["unit_price_cents"] == 1200
 
 
-def test_devolucion_total(client, auth, catalog):
+def test_devolucion_total(client, auth, catalog, caja):
     venta = client.post("/api/sales", json=_sale(catalog), headers=auth).json()
 
     response = client.post(
@@ -187,7 +187,7 @@ def test_devolucion_total(client, auth, catalog):
     assert original["total_cents"] == 2400  # el ticket original no se toca
 
 
-def test_devolucion_parcial(client, auth, catalog):
+def test_devolucion_parcial(client, auth, catalog, caja):
     body = {
         "lines": [
             {"variant_id": str(catalog["pollo"].id), "quantity": 1},
@@ -209,8 +209,13 @@ def test_devolucion_parcial(client, auth, catalog):
     assert devolucion["total_cents"] == -1200
     assert len(devolucion["lines"]) == 1
 
+    # El original queda parcialmente devuelto, no devuelto del todo: le quedan
+    # 8,00 EUR que el cliente si pago.
+    original = client.get(f"/api/sales/{venta['id']}", headers=auth).json()
+    assert original["status"] == "partially_refunded"
 
-def test_el_cajero_no_puede_devolver(client, catalog, cashier):
+
+def test_el_cajero_no_puede_devolver(client, auth, catalog, caja, cashier):
     token = client.post("/api/auth/login", json={"pin": "5678"}).json()["token"]
     cajero = {"Authorization": f"Bearer {token}"}
 

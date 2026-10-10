@@ -5,16 +5,19 @@ from __future__ import annotations
 import uuid
 from datetime import date, time
 
-from sqlalchemy import Date, ForeignKey, Integer, String, Time
+from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, String, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import GUID, Entity
+from app.models.base import GUID, Entity, one_of
 
 PREORDER_STATUS = ("pending", "ready", "collected", "cancelled", "no_show")
 
 
 class Preorder(Entity):
     __tablename__ = "preorders"
+    __table_args__ = (
+        CheckConstraint(one_of("status", PREORDER_STATUS), name="ck_preorders_status"),
+    )
 
     customer_name: Mapped[str] = mapped_column(String(150))
     customer_phone: Mapped[str | None] = mapped_column(String(30))
