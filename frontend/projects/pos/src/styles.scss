@@ -1,0 +1,58 @@
+/* Estilos globales del TPV.
+   Tema oscuro fijo: la pantalla está bajo los fluorescentes del mostrador y
+   el contraste alto se lee mejor de pie y de lejos. */
+
+:root {
+  --bg: #14181c;
+  --surface: #1c2227;
+  --surface-strong: #232a31;
+  --line: #333c45;
+  --text: #eef2f5;
+  --muted: #94a3af;
+  --accent: #4fc3f7;
+  --ok: #66d19e;
+  --ok-dim: #1f3a2e;
+  --danger: #ff8a80;
+  --danger-dim: #3d2222;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+}
+
+/* Kiosko: ni zoom accidental, ni selección de texto, ni rebote al desplazar */
+body {
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+input {
+  font-family: inherit;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

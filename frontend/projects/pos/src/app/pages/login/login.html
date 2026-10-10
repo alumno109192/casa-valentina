@@ -1,0 +1,23 @@
+<div class="login">
+  <h1>Casa Valentina</h1>
+  <p class="hint">Introduce tu PIN</p>
+
+  <div class="dots" aria-label="Dígitos introducidos">
+    @for (slot of [0, 1, 2, 3]; track slot) {
+      <span class="dot" [class.filled]="pin().length > slot"></span>
+    }
+  </div>
+
+  @if (error()) {
+    <p class="error" role="alert">{{ error() }}</p>
+  }
+
+  <div class="keypad">
+    @for (key of keys; track key) {
+      <button type="button" (click)="press(key)" [disabled]="busy()">{{ key }}</button>
+    }
+    <button type="button" class="ghost" (click)="backspace()" [disabled]="busy()">←</button>
+    <button type="button" (click)="press(0)" [disabled]="busy()">0</button>
+    <span></span>
+  </div>
+</div>

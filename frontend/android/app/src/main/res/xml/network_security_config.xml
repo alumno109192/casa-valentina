@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  El backend corre en el mini-PC del local y se sirve por HTTP sin cifrar en la
+  red interna del establecimiento. Android bloquea el tráfico en claro desde
+  Android 9, así que se permite solo para las direcciones privadas del local,
+  no para internet.
+
+  Si algún día el backend pasa a HTTPS con certificado propio, hay que quitar
+  estas excepciones y confiar en el certificado.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Rango habitual del router del local -->
+        <domain includeSubdomains="true">192.168.1.50</domain>
+        <!-- Nombre del mini-PC, por si se resuelve por mDNS -->
+        <domain includeSubdomains="true">tpv.local</domain>
+        <!-- Desarrollo: el propio equipo y el emulador -->
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

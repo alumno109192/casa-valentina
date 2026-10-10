@@ -1,0 +1,287 @@
+<header class="top">
+  <input
+    class="search"
+    type="search"
+    placeholder="Buscar producto…"
+    [value]="search()"
+    (input)="search.set($any($event.target).value)"
+  />
+  <span class="status" [class.offline]="!online()">
+    {{ online() ? 'Conectado' : 'Sin conexión' }}
+  </span>
+  <span class="staff">{{ staffName() }}</span>
+  <button type="button" class="ghost" (click)="logout()">Salir</button>
+</header>
+
+@if (loadError()) {
+  <p class="banner" role="alert">
+    {{ loadError() }}
+    <button type="button" (click)="loadCatalog()">Reintentar</button>
+  </p>
+}
+
+<main class="layout">
+  <!-- Izquierda: pedido en curso, teclado y cobro -->
+  <section class="order" aria-label="Pedido en curso">
+    <ul class="lines">
+      @for (line of order.lines(); track line.key) {
+        <li (click)="editLine(line)">
+          <span class="qty">{{ line.quantity }}</span>
+          <span class="name">
+            {{ line.name }}
+            @if (line.note) {
+              <small>{{ line.note }}</small>
+            }
+          </span>
+          <span class="amount">{{ cents(line.unitPriceCents * line.quantity) }}</span>
+        </li>
+      } @empty {
+        <li class="empty">Toca un producto para empezar</li>
+      }
+    </ul>
+
+    <div class="total">
+      <span>Total</span>
+      <strong>{{ euros(totalCents()) }}</strong>
+    </div>
+
+    <div class="keypad">
+      @for (digit of [1, 2, 3, 4, 5, 6, 7, 8, 9]; track digit) {
+        <button type="button" (click)="pressDigit(digit)">{{ digit }}</button>
+      }
+      <button type="button" class="ghost" (click)="clearQuantity()">C</button>
+      <button type="button" (click)="pressDigit(0)">0</button>
+      <span class="pending">
+        @if (order.pendingQuantity()) {
+          ×{{ order.pendingQuantity() }}
+        }
+      </span>
+    </div>
+
+    <div class="pay">
+      <button
+        type="button"
+        class="cash"
+        (click)="startCash()"
+        [disabled]="order.isEmpty() || busy()"
+      >
+        Efectivo
+      </button>
+      <button
+        type="button"
+        class="card"
+        (click)="startCard()"
+        [disabled]="order.isEmpty() || busy()"
+      >
+        Tarjeta
+      </button>
+    </div>
+  </section>
+
+  <!-- Centro: familias -->
+  <nav class="families" aria-label="Familias">
+    @for (category of categories(); track category.id) {
+      <button
+        type="button"
+        [class.active]="category.id === selectedCategoryId()"
+        [style.borderLeftColor]="category.color"
+        (click)="selectCategory(category)"
+      >
+        {{ category.name }}
+      </button>
+    }
+  </nav>
+
+  <!-- Derecha: botonera de productos -->
+  <section class="grid" aria-label="Productos">
+    @for (product of visibleProducts(); track product.id) {
+      <button
+        type="button"
+        class="product"
+        [class.unavailable]="!product.is_available"
+        (click)="tapProduct(product)"
+      >
+        <span class="label">{{ product.short_name }}</span>
+        @if (product.is_open_price) {
+          <span class="price">importe libre</span>
+        } @else if (product.variants.length === 1) {
+          <span class="price">{{ cents(product.variants[0].price_cents) }}</span>
+        } @else {
+          <span class="price">{{ product.variants.length }} tamaños</span>
+        }
+        @if (!product.is_available) {
+          <span class="sold-out">Agotado</span>
+        }
+      </button>
+    } @empty {
+      <p class="muted">Sin productos en esta familia</p>
+    }
+  </section>
+</main>
+
+<!-- Selector de variante: Ración / Media -->
+@if (overlay() === 'variant' && pendingProduct(); as product) {
+  <div class="backdrop" (click)="closeOverlay()">
+    <div class="sheet" (click)="$event.stopPropagation()">
+      <h2>{{ pendingProduct()!.name }}</h2>
+      <div class="variant-list">
+        @for (variant of pendingProduct()!.variants; track variant.id) {
+          <button type="button" (click)="chooseVariant(variant)">
+            <span>{{ variant.name }}</span>
+            <strong>{{ cents(variant.price_cents) }}</strong>
+          </button>
+        }
+      </div>
+      <button type="button" class="ghost wide" (click)="closeOverlay()">Cancelar</button>
+    </div>
+  </div>
+}
+
+<!-- Precio libre -->
+@if (overlay() === 'openPrice') {
+  <div class="backdrop" (click)="closeOverlay()">
+    <div class="sheet" (click)="$event.stopPropagation()">
+      <h2>Precio libre</h2>
+      <label>
+        Concepto
+        <input
+          type="text"
+          [value]="openPriceName()"
+          (input)="openPriceName.set($any($event.target).value)"
+        />
+      </label>
+      <label>
+        Importe
+        <input
+          type="text"
+          inputmode="decimal"
+          placeholder="0,00"
+          [value]="openPriceText()"
+          (input)="openPriceText.set($any($event.target).value)"
+        />
+      </label>
+      @if (paymentError()) {
+        <p class="error">{{ paymentError() }}</p>
+      }
+      <div class="sheet-actions">
+        <button type="button" class="ghost" (click)="closeOverlay()">Cancelar</button>
+        <button type="button" class="primary" (click)="confirmOpenPrice()">Añadir</button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- Edición de línea -->
+@if (overlay() === 'line' && editingLine(); as line) {
+  <div class="backdrop" (click)="closeOverlay()">
+    <div class="sheet" (click)="$event.stopPropagation()">
+      <h2>{{ editingLine()!.name }}</h2>
+      <div class="stepper">
+        <button type="button" (click)="changeQuantity(-1)">−</button>
+        <strong>{{ editingLine()!.quantity }}</strong>
+        <button type="button" (click)="changeQuantity(1)">+</button>
+      </div>
+      <div class="sheet-actions">
+        <button type="button" class="danger" (click)="removeLine()">Quitar línea</button>
+        <button type="button" class="primary" (click)="closeOverlay()">Listo</button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- Cobro en efectivo -->
+@if (overlay() === 'cash') {
+  <div class="backdrop">
+    <div class="sheet wide-sheet">
+      <h2>Efectivo · {{ euros(totalCents()) }}</h2>
+
+      <div class="quick">
+        @for (amount of quickCash(); track amount) {
+          <button type="button" (click)="setTendered(amount)">
+            {{ amount === totalCents() ? 'Exacto' : cents(amount) }}
+          </button>
+        }
+      </div>
+
+      <div class="tendered">
+        <span>Entregado</span>
+        <strong>{{ tenderedText() || '0,00' }}</strong>
+      </div>
+
+      @if (changeCents() !== null && changeCents()! >= 0) {
+        <div class="change">
+          <span>Cambio</span>
+          <strong>{{ cents(changeCents()!) }}</strong>
+        </div>
+      }
+
+      <div class="keypad small">
+        @for (digit of ['1','2','3','4','5','6','7','8','9']; track digit) {
+          <button type="button" (click)="pressTenderDigit(digit)">{{ digit }}</button>
+        }
+        <button type="button" (click)="pressTenderDigit(',')">,</button>
+        <button type="button" (click)="pressTenderDigit('0')">0</button>
+        <button type="button" class="ghost" (click)="clearTender()">C</button>
+      </div>
+
+      @if (paymentError()) {
+        <p class="error">{{ paymentError() }}</p>
+      }
+
+      <div class="sheet-actions">
+        <button type="button" class="ghost" (click)="closeOverlay()">Cancelar</button>
+        <button
+          type="button"
+          class="primary"
+          (click)="confirmCash()"
+          [disabled]="busy()"
+        >
+          Cobrar
+        </button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- Cobro con tarjeta: el importe se teclea en el datáfono -->
+@if (overlay() === 'card') {
+  <div class="backdrop">
+    <div class="sheet">
+      <h2>Tarjeta</h2>
+      <p class="muted">Teclea este importe en el datáfono</p>
+      <p class="big-amount">{{ euros(totalCents()) }}</p>
+      @if (paymentError()) {
+        <p class="error">{{ paymentError() }}</p>
+      }
+      <div class="sheet-actions">
+        <button type="button" class="ghost" (click)="closeOverlay()">Cancelar</button>
+        <button
+          type="button"
+          class="primary"
+          (click)="confirmCard()"
+          [disabled]="busy()"
+        >
+          Cobrado
+        </button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- Resultado del cobro -->
+@if (lastTicket(); as ticket) {
+  <div class="backdrop" (click)="dismissTicket()">
+    <div class="sheet" (click)="$event.stopPropagation()">
+      <h2>{{ ticket.ticket_full_number }}</h2>
+      <p class="big-amount">{{ euros(ticket.total_cents) }}</p>
+      @for (payment of ticket.payments; track payment.id) {
+        @if (payment.change_cents) {
+          <p class="change-note">Cambio {{ cents(payment.change_cents) }}</p>
+        }
+      }
+      <button type="button" class="primary wide" (click)="dismissTicket()">
+        Siguiente cliente
+      </button>
+    </div>
+  </div>
+}

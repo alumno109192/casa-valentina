@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TPV Casa Valentina</string>
+    <string name="title_activity_main">TPV Casa Valentina</string>
+    <string name="package_name">es.casavalentina.tpv</string>
+    <string name="custom_url_scheme">es.casavalentina.tpv</string>
+</resources>

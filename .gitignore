@@ -1,0 +1,28 @@
+# Python
+backend/.venv/
+__pycache__/
+*.py[cod]
+backend/.env
+backend/tpv.db
+backend/tpv.db-wal
+backend/tpv.db-shm
+
+# Node / Angular
+node_modules/
+frontend/dist/
+frontend/.angular/
+
+# Android
+frontend/android/local.properties
+frontend/android/.gradle/
+frontend/android/build/
+frontend/android/app/build/
+frontend/android/capacitor-cordova-android-plugins/build/
+*.apk
+*.keystore
+
+# Editores y sistema
+.vscode/settings.json
+.idea/
+Thumbs.db
+desktop.ini
